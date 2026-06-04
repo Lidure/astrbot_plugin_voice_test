@@ -1,37 +1,55 @@
 import shutil
 import time
 import asyncio
+import re
 from pathlib import Path
+from urllib.parse import quote
 
 from astrbot.core.star import Star
-from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.message_components import Record, Reply
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
+from astrbot.api.message_components import Record, Reply, Plain
 
 
 class VoiceDownloader(Star):
     """
-    语音下载插件 (纯本地文件终极版)
-    用法：引用（回复）一条语音消息，然后发送“下载音频”
+    语音下载与发送插件
+    用法：
+    1. 引用语音发送：/下载音频 <名称>  (例如: /下载音频 exe)
+    2. 发送已保存语音：/发送音频 <名称> (例如: /发送音频 exe)
     """
 
     def _get_save_dir(self) -> Path:
-        """
-        懒加载获取保存目录。
-        不再依赖 on_load，确保在任何时候调用都能拿到正确的目录。
-        """
+        """懒加载获取保存目录"""
         if not hasattr(self, '_save_dir') or self._save_dir is None:
-            # 使用 __file__ 获取当前 main.py 所在的绝对路径，最稳妥
             plugin_dir = Path(__file__).parent.resolve()
             self._save_dir = plugin_dir / "data" / "records"
             self._save_dir.mkdir(parents=True, exist_ok=True)
-            print(f"[VoiceDownloader] 📁 初始化保存目录: {self._save_dir}")
         return self._save_dir
+
+    def _extract_name(self, event: AstrMessageEvent, cmd: str) -> str:
+        """从消息文本中提取命令后的参数名称"""
+        # 匹配命令后面的所有非空字符
+        pattern = rf'{cmd}\s+(.+)'
+        match = re.search(pattern, event.message_str)
+        if match:
+            # 清理名称，去除首尾空格和可能的非法文件名字符
+            name = match.group(1).strip()
+            # 简单过滤一下 Windows 下的非法文件名字符
+            name = re.sub(r'[\\/*?:"<>|]', "", name)
+            return name
+        return None
 
     @filter.command("下载音频")
     async def download_voice(self, event: AstrMessageEvent):
-        """命令：下载音频（必须引用一条语音消息）"""
+        """命令：下载音频并命名保存（必须引用一条语音消息）"""
+        
+        # 1. 提取名称参数
+        name = self._extract_name(event, "下载音频")
+        if not name:
+            await event.send(event.plain_result("❌ 请指定音频名称\n👉 用法：/下载音频 <名称>\n👉 示例：/下载音频 exe"))
+            return
 
-        # 1. 检查引用并获取 Record 组件
+        # 2. 检查引用并获取 Record 组件
         record_comp = None
         for comp in event.message_obj.message:
             if isinstance(comp, Reply):
@@ -46,43 +64,86 @@ class VoiceDownloader(Star):
             await event.send(event.plain_result("❌ 被引用的消息中不包含语音"))
             return
 
-        # 2. 提取本地路径
+        # 3. 提取本地路径
         record_path = getattr(record_comp, 'path', None)
-        
         if not record_path:
             await event.send(event.plain_result("❌ 无法获取语音的本地路径"))
             return
 
-        # 3. 执行本地文件复制（带重试机制）
-        print(f"[VoiceDownloader] 🚀 开始处理本地文件: {record_path}")
-        save_path = await self._copy_local_file_with_retry(record_path)
+        # 4. 执行本地文件复制
+        print(f"[VoiceDownloader] 🚀 准备保存为 [{name}]，源文件: {record_path}")
+        save_path = await self._copy_local_file_with_retry(record_path, name)
         
         if save_path:
-            await event.send(event.plain_result(f"✅ 语音已保存到本地\n📁 路径：{save_path}"))
+            await event.send(event.plain_result(f"✅ 语音已保存\n🏷️ 名称：{name}\n📁 路径：{save_path}"))
         else:
-            await event.send(event.plain_result("❌ 保存本地语音失败，请查看控制台 [VoiceDownloader] 详细日志"))
+            await event.send(event.plain_result("❌ 保存本地语音失败，请查看控制台日志"))
 
-    async def _copy_local_file_with_retry(self, src_path_str: str) -> str:
+    @filter.command("发送音频")
+    async def send_voice(self, event: AstrMessageEvent):
+        """命令：发送已保存的音频"""
+        
+        # 1. 提取名称参数
+        name = self._extract_name(event, "发送音频")
+        if not name:
+            await event.send(event.plain_result("❌ 请指定音频名称\n👉 用法：/发送音频 <名称>\n👉 示例：/发送音频 exe"))
+            return
+
+        save_dir = self._get_save_dir()
+        
+        # 2. 查找文件 (遍历常见语音后缀)
+        target_file = None
+        for ext in ['.amr', '.silk', '.pcm', '.mp3', '.wav']:
+            guess_path = save_dir / f"{name}{ext}"
+            if guess_path.is_file():
+                target_file = guess_path
+                break
+                
+        # 如果上面没找到，用 glob 模糊匹配一下
+        if not target_file:
+            files = list(save_dir.glob(f"{name}.*"))
+            if files:
+                target_file = files[0]
+
+        if not target_file:
+            await event.send(event.plain_result(f"❌ 未找到名为 [{name}] 的音频\n💡 请检查名称是否正确"))
+            return
+
+        # 3. 发送语音
+        try:
+            # 构造 file:/// 协议路径，兼容 OneBot v11 (NapCat/Lagrange 等)
+            # 使用 as_posix() 将 Windows 反斜杠转为正斜杠，并用 quote 处理空格和中文
+            file_uri = f"file:///{quote(target_file.as_posix())}"
+            print(f"[VoiceDownloader] 📤 准备发送音频: {file_uri}")
+            
+            # 构造消息链并发送
+            chain = MessageChain([Record(file=file_uri)])
+            await event.send(chain)
+            
+        except Exception as e:
+            print(f"[VoiceDownloader] ❌ 发送音频失败: {e}")
+            import traceback
+            traceback.print_exc()
+            await event.send(event.plain_result(f"❌ 发送音频失败: {str(e)}"))
+
+    async def _copy_local_file_with_retry(self, src_path_str: str, name: str) -> str:
         """带重试和多重路径猜测的本地文件复制"""
         try:
-            # 规范化路径字符串
             clean_str = src_path_str.strip().strip("'\"")
             src_path = Path(clean_str)
             
             print(f"[VoiceDownloader] 🔍 解析后的绝对路径: {src_path.absolute()}")
 
-            # 尝试查找文件 (最多重试 3 次，每次等待 0.5 秒，防止 QQ 进程占用)
+            # 尝试查找文件 (最多重试 3 次，每次等待 0.5 秒)
             target_file = None
             for attempt in range(3):
                 if src_path.is_file():
                     target_file = src_path
                     break
                 
-                # 兜底猜测：如果原文件不存在，尝试加上 .amr 或 .silk 后缀
                 for ext in ['.amr', '.silk', '.pcm']:
                     guess_path = src_path.with_suffix(ext)
                     if guess_path.is_file():
-                        print(f"[VoiceDownloader] 💡 猜测找到文件: {guess_path}")
                         target_file = guess_path
                         break
                 
@@ -93,24 +154,18 @@ class VoiceDownloader(Star):
                 await asyncio.sleep(0.5)
 
             if not target_file:
-                parent_dir = src_path.parent
-                if parent_dir.exists():
-                    files_in_dir = [f.name for f in parent_dir.iterdir() if f.is_file()]
-                    print(f"[VoiceDownloader] ❌ 文件不存在！父目录下的文件有: {files_in_dir[:10]}...")
-                else:
-                    print(f"[VoiceDownloader] ❌ 连父目录都不存在: {parent_dir}")
+                print(f"[VoiceDownloader] ❌ 源文件不存在: {src_path}")
                 return None
 
-            # 🌟 核心修复：使用懒加载获取保存目录，彻底解决 save_dir 丢失问题
             save_dir = self._get_save_dir()
-
-            # 执行复制
-            ext = target_file.suffix if target_file.suffix else ".amr"
-            timestamp = int(time.time() * 1000)
-            dest_path = save_dir / f"voice_{timestamp}{ext}"
             
+            # 🌟 核心修改：使用用户指定的名称命名
+            ext = target_file.suffix if target_file.suffix else ".amr"
+            dest_path = save_dir / f"{name}{ext}"
+            
+            # 如果同名文件已存在，shutil.copy2 会直接覆盖
             shutil.copy2(target_file, dest_path)
-            print(f"[VoiceDownloader] ✅ 成功复制文件到: {dest_path}")
+            print(f"[VoiceDownloader] ✅ 成功保存为: {dest_path}")
             
             return str(dest_path)
             
