@@ -24,46 +24,32 @@ class VoiceDownloader(Star):
     async def download_voice(self, event: AstrMessageEvent):
         """命令：下载音频（必须引用一条语音消息）"""
 
-        # 1. 检查引用
-        reply_id = None
+        # 1. 检查引用并直接获取 Record 组件
+        record_comp = None
         for comp in event.message_obj.message:
             if isinstance(comp, Reply):
-                reply_id = comp.id
-                break
-        if not reply_id:
-            await event.send(event.plain_result("⚠️ 请先引用（回复）一条语音消息，再发送“下载音频”"))
-            return
-
-        # 2. 获取被引用消息
-        try:
-            msg_data = await event.bot.api.call_action("get_msg", message_id=reply_id)
-        except Exception as e:
-            print(f"[VoiceDownloader] get_msg 失败: {e}")
-            await event.send(event.plain_result("❌ 获取被引用消息失败"))
-            return
-            
-        if not msg_data or "message" not in msg_data:
-            await event.send(event.plain_result("❌ 无法获取被引用的消息，可能已过期"))
-            return
-
-        # 3. 寻找语音段 (优先取 url，其次取 file)
-        record_url = None
-        record_file = None
-        
-        for seg in msg_data["message"]:
-            if seg.get("type") == "record":
-                data = seg.get("data", {})
-                record_url = data.get("url")
-                record_file = data.get("file")
+                # AstrBot 会将引用消息的内容解析到 Reply 的 chain 属性中
+                if hasattr(comp, 'chain') and comp.chain:
+                    for sub_comp in comp.chain:
+                        if isinstance(sub_comp, Record):
+                            record_comp = sub_comp
+                            break
                 break
                 
-        if not record_url and not record_file:
-            await event.send(event.plain_result("❌ 被引用的消息中不包含语音"))
+        if not record_comp:
+            await event.send(event.plain_result("❌ 被引用的消息中不包含语音，或无法解析引用消息"))
             return
 
-        # 4. 下载
-        print(f"[VoiceDownloader] 提取到 url: {record_url}, file: {record_file}")
-        save_path = await self._save_voice(event, record_url, record_file)
+        # 2. 从 Record 组件中提取信息
+        # 使用 getattr 防止某些平台缺少某个属性
+        record_url = getattr(record_comp, 'url', None)
+        record_path = getattr(record_comp, 'path', None)
+        record_file = getattr(record_comp, 'file', None)
+        
+        print(f"[VoiceDownloader] 提取到组件信息 -> url: {record_url}, path: {record_path}, file: {record_file}")
+
+        # 3. 下载/复制
+        save_path = await self._save_voice(event, record_url, record_path, record_file)
         
         if save_path:
             await event.send(event.plain_result(f"✅ 语音已保存到本地\n📁 路径：{save_path}"))
@@ -71,57 +57,38 @@ class VoiceDownloader(Star):
             await event.send(event.plain_result("❌ 下载语音失败，请查看控制台日志获取详细原因"))
 
     # ---------- 以下为内部方法 ----------
-    async def _save_voice(self, event: AstrMessageEvent, url: str, file: str) -> str:
+    async def _save_voice(self, event: AstrMessageEvent, url: str, path: str, file_id: str) -> str:
         try:
-            # 策略 1：如果 get_msg 直接返回了 http url，直接下载 (最推荐)
+            # 策略 1：如果存在本地绝对路径，且文件真实存在，直接复制（最快、最稳）
+            if path and os.path.isfile(path):
+                print(f"[VoiceDownloader] 策略1: 直接复制本地文件 {path}")
+                return self._copy_local_file(path)
+
+            # 策略 2：如果存在 http url，直接下载
             if url and url.startswith("http"):
-                print("[VoiceDownloader] 策略1: 直接下载 url")
+                print(f"[VoiceDownloader] 策略2: 直接下载 url")
                 return await self._download_from_url(url)
 
-            # 策略 2：调用 get_record API 获取真实路径或 URL
-            if file:
-                print(f"[VoiceDownloader] 策略2: 调用 get_record, file={file}")
+            # 策略 3：兜底方案 - 调用 OneBot API get_record (通常用不到，除非前两者都失效)
+            if file_id:
+                print(f"[VoiceDownloader] 策略3: 兜底调用 get_record API, file={file_id}")
                 try:
-                    # 尝试请求 mp3 格式 (NapCat/Lagrange 等支持)
-                    result = await event.bot.api.call_action("get_record", file=file, out_format="mp3")
+                    result = await event.bot.api.call_action("get_record", file=file_id, out_format="mp3")
                 except Exception:
-                    # 如果不支持 out_format 参数，退回到默认请求
-                    result = await event.bot.api.call_action("get_record", file=file)
-                
-                print(f"[VoiceDownloader] get_record 返回: {result}")
+                    result = await event.bot.api.call_action("get_record", file=file_id)
                 
                 if isinstance(result, dict):
-                    # 从 result 中提取可能的 url 或 本地路径
                     res_url = result.get("url")
                     res_file = result.get("file")
                     
                     if res_url and res_url.startswith("http"):
-                        print("[VoiceDownloader] 策略2.1: 下载 get_record 返回的 url")
                         return await self._download_from_url(res_url)
-                        
-                    if res_file:
-                        if res_file.startswith("http"):
-                            print("[VoiceDownloader] 策略2.2: 下载 get_record 返回的 file (http)")
-                            return await self._download_from_url(res_file)
-                        if os.path.isfile(res_file):
-                            print(f"[VoiceDownloader] 策略2.3: 复制本地文件 {res_file}")
-                            return self._copy_local_file(res_file)
-                            
-                    if "base64" in result:
-                        print("[VoiceDownloader] 策略2.4: 解码 base64")
-                        import base64
-                        data = base64.b64decode(result["base64"])
-                        save_path = self._gen_save_path(".amr")
-                        async with aiofiles.open(save_path, "wb") as f:
-                            await f.write(data)
-                        return save_path
+                    if res_file and res_file.startswith("http"):
+                        return await self._download_from_url(res_file)
+                    if res_file and os.path.isfile(res_file):
+                        return self._copy_local_file(res_file)
 
-            # 策略 3：file 本身就是一个本地绝对路径
-            if file and os.path.isfile(file):
-                print(f"[VoiceDownloader] 策略3: 直接复制本地文件 {file}")
-                return self._copy_local_file(file)
-
-            print(f"[VoiceDownloader] ❌ 所有策略均失败。url: {url}, file: {file}")
+            print(f"[VoiceDownloader] ❌ 所有策略均失败。")
             return None
             
         except Exception as e:
@@ -132,9 +99,9 @@ class VoiceDownloader(Star):
 
     async def _download_from_url(self, url: str) -> str:
         try:
-            # 增加超时时间和常见的 UA，防止被服务器拒绝
             timeout = aiohttp.ClientTimeout(total=30)
-            headers = {"User-Agent": "Mozilla/5.0"}
+            # 加上 UA 防止被腾讯多媒体服务器拦截
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
