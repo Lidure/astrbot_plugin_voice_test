@@ -1,5 +1,6 @@
 import shutil
 import time
+import asyncio
 from pathlib import Path
 
 from astrbot.core.star import Star
@@ -9,13 +10,12 @@ from astrbot.api.message_components import Record, Reply
 
 class VoiceDownloader(Star):
     """
-    语音下载插件 (纯本地文件版)
+    语音下载插件 (纯本地文件增强版)
     用法：引用（回复）一条语音消息，然后发送“下载音频”
     """
 
     async def on_load(self):
         """插件加载时创建保存目录"""
-        # 使用 pathlib 创建目录，更稳健
         self.save_dir = Path(self.plugin_dir) / "data" / "records"
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -38,44 +38,75 @@ class VoiceDownloader(Star):
             await event.send(event.plain_result("❌ 被引用的消息中不包含语音"))
             return
 
-        # 2. 提取本地路径 (使用 getattr 防止属性缺失)
+        # 2. 提取本地路径
         record_path = getattr(record_comp, 'path', None)
         
         if not record_path:
             await event.send(event.plain_result("❌ 无法获取语音的本地路径"))
             return
 
-        # 3. 执行本地文件复制
-        print(f"[VoiceDownloader] 准备处理本地文件: {record_path}")
-        save_path = self._copy_local_file(record_path)
+        # 3. 执行本地文件复制（带重试机制）
+        print(f"[VoiceDownloader] 🚀 开始处理本地文件: {record_path}")
+        save_path = await self._copy_local_file_with_retry(record_path)
         
         if save_path:
             await event.send(event.plain_result(f"✅ 语音已保存到本地\n📁 路径：{save_path}"))
         else:
-            await event.send(event.plain_result("❌ 保存本地语音失败，请查看控制台日志"))
+            await event.send(event.plain_result("❌ 保存本地语音失败，请查看控制台 [VoiceDownloader] 详细日志"))
 
-    def _copy_local_file(self, src_path_str: str) -> str:
-        """专门处理本地文件的复制，使用 pathlib 完美兼容特殊字符路径"""
+    async def _copy_local_file_with_retry(self, src_path_str: str) -> str:
+        """带重试和多重路径猜测的本地文件复制"""
         try:
-            # 将字符串路径转换为 Path 对象，自动处理 Windows 的反斜杠、空格和单引号
-            src_path = Path(src_path_str)
+            # 规范化路径字符串 (去除可能的多余引号或转义)
+            clean_str = src_path_str.strip().strip("'\"")
+            src_path = Path(clean_str)
             
-            # 检查文件是否真实存在
-            if not src_path.is_file():
-                print(f"[VoiceDownloader] ❌ 本地文件不存在: {src_path.absolute()}")
-                return None
+            print(f"[VoiceDownloader] 🔍 解析后的绝对路径: {src_path.absolute()}")
+
+            # 尝试查找文件 (最多重试 3 次，每次等待 0.5 秒，防止 QQ 进程占用)
+            target_file = None
+            for attempt in range(3):
+                if src_path.is_file():
+                    target_file = src_path
+                    break
                 
-            # 生成目标路径 (保留原后缀，如果没有则默认 .amr)
-            ext = src_path.suffix if src_path.suffix else ".amr"
+                # 兜底猜测：如果原文件不存在，尝试加上 .amr 或 .silk 后缀
+                for ext in ['.amr', '.silk', '.pcm']:
+                    guess_path = src_path.with_suffix(ext)
+                    if guess_path.is_file():
+                        print(f"[VoiceDownloader] 💡 猜测找到文件: {guess_path}")
+                        target_file = guess_path
+                        break
+                
+                if target_file:
+                    break
+                    
+                print(f"[VoiceDownloader] ⏳ 文件暂不可用，等待 QQ 释放锁... (尝试 {attempt + 1}/3)")
+                await asyncio.sleep(0.5)
+
+            if not target_file:
+                # 如果还是找不到，列出父目录内容帮助排错
+                parent_dir = src_path.parent
+                if parent_dir.exists():
+                    files_in_dir = [f.name for f in parent_dir.iterdir() if f.is_file()]
+                    print(f"[VoiceDownloader] ❌ 文件不存在！父目录 [{parent_dir}] 下的文件有: {files_in_dir[:10]}...")
+                else:
+                    print(f"[VoiceDownloader] ❌ 连父目录都不存在: {parent_dir}")
+                return None
+
+            # 执行复制
+            ext = target_file.suffix if target_file.suffix else ".amr"
             timestamp = int(time.time() * 1000)
             dest_path = self.save_dir / f"voice_{timestamp}{ext}"
             
-            # 执行复制
-            shutil.copy2(src_path, dest_path)
+            shutil.copy2(target_file, dest_path)
             print(f"[VoiceDownloader] ✅ 成功复制文件到: {dest_path}")
             
             return str(dest_path)
             
+        except PermissionError as e:
+            print(f"[VoiceDownloader] ❌ 权限被拒绝 (文件可能被 QQ 独占): {e}")
+            return None
         except Exception as e:
             print(f"[VoiceDownloader] ❌ 本地文件复制异常: {e}")
             import traceback
