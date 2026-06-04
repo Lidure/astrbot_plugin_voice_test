@@ -16,15 +16,11 @@ class VoiceDownloader(Star):
     """
 
     async def on_load(self):
-        """插件加载时创建保存目录"""
         self.save_dir = os.path.join(self.plugin_dir, "data", "records")
         os.makedirs(self.save_dir, exist_ok=True)
 
-    # ✅ 正确写法：@filter.command，不是 @filter.commands
     @filter.command("下载音频")
     async def download_voice(self, event: AstrMessageEvent):
-        """命令：下载音频（必须引用一条语音消息）"""
-
         # 1. 检查引用
         reply_id = None
         for comp in event.message_obj.message:
@@ -32,13 +28,13 @@ class VoiceDownloader(Star):
                 reply_id = comp.id
                 break
         if not reply_id:
-            await event.reply("⚠️ 请先引用（回复）一条语音消息，再发送“下载音频”")
+            await event.send("⚠️ 请先引用（回复）一条语音消息，再发送“下载音频”")
             return
 
         # 2. 获取被引用消息
         msg_data = await event.bot.api.call_action("get_msg", message_id=reply_id)
         if not msg_data or "message" not in msg_data:
-            await event.reply("❌ 无法获取被引用的消息，可能已过期")
+            await event.send("❌ 无法获取被引用的消息，可能已过期")
             return
 
         # 3. 寻找语音段
@@ -48,17 +44,16 @@ class VoiceDownloader(Star):
                 record_file = seg["data"].get("file") or seg["data"].get("url")
                 break
         if not record_file:
-            await event.reply("❌ 被引用的消息中不包含语音")
+            await event.send("❌ 被引用的消息中不包含语音")
             return
 
         # 4. 下载
         save_path = await self._save_voice(event, record_file)
         if save_path:
-            await event.reply(f"✅ 语音已保存到本地\n📁 路径：{save_path}")
+            await event.send(f"✅ 语音已保存到本地\n📁 路径：{save_path}")
         else:
-            await event.reply("❌ 下载语音失败，请稍后重试")
+            await event.send("❌ 下载语音失败，请稍后重试")
 
-    # ---------- 以下为内部方法，无需修改 ----------
     async def _save_voice(self, event: AstrMessageEvent, file: str) -> str:
         try:
             if file.startswith("http"):
