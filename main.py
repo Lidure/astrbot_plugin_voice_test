@@ -1,24 +1,121 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
-from astrbot.api import logger
+import os
+import aiohttp
+import aiofiles
+import shutil
+import time
 
-@register("helloworld", "YourName", "一个简单的 Hello World 插件", "1.0.0")
-class MyPlugin(Star):
-    def __init__(self, context: Context):
-        super().__init__(context)
+from astrbot.core.star import Star
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.message_components import Record, Reply
 
-    async def initialize(self):
-        """可选择实现异步的插件初始化方法，当实例化该插件类之后会自动调用该方法。"""
 
-    # 注册指令的装饰器。指令名为 helloworld。注册成功后，发送 `/helloworld` 就会触发这个指令，并回复 `你好, {user_name}!`
-    @filter.command("helloworld")
-    async def helloworld(self, event: AstrMessageEvent):
-        """这是一个 hello world 指令""" # 这是 handler 的描述，将会被解析方便用户了解插件内容。建议填写。
-        user_name = event.get_sender_name()
-        message_str = event.message_str # 用户发的纯文本消息字符串
-        message_chain = event.get_messages() # 用户所发的消息的消息链 # from astrbot.api.message_components import *
-        logger.info(message_chain)
-        yield event.plain_result(f"Hello, {user_name}, 你发了 {message_str}!") # 发送一条纯文本消息
+class VoiceDownloader(Star):
+    """
+    语音下载插件
+    用法：引用（回复）一条语音消息，然后发送“下载音频”
+    """
 
-    async def terminate(self):
-        """可选择实现异步的插件销毁方法，当插件被卸载/停用时会调用。"""
+    async def on_load(self):
+        """插件加载时创建保存目录"""
+        self.save_dir = os.path.join(self.plugin_dir, "data", "records")
+        os.makedirs(self.save_dir, exist_ok=True)
+
+    # ✅ 正确写法：@filter.command，不是 @filter.commands
+    @filter.command("下载音频")
+    async def download_voice(self, event: AstrMessageEvent):
+        """命令：下载音频（必须引用一条语音消息）"""
+
+        # 1. 检查引用
+        reply_id = None
+        for comp in event.message_obj.message:
+            if isinstance(comp, Reply):
+                reply_id = comp.id
+                break
+        if not reply_id:
+            await event.reply("⚠️ 请先引用（回复）一条语音消息，再发送“下载音频”")
+            return
+
+        # 2. 获取被引用消息
+        msg_data = await event.bot.api.call_action("get_msg", message_id=reply_id)
+        if not msg_data or "message" not in msg_data:
+            await event.reply("❌ 无法获取被引用的消息，可能已过期")
+            return
+
+        # 3. 寻找语音段
+        record_file = None
+        for seg in msg_data["message"]:
+            if seg.get("type") == "record":
+                record_file = seg["data"].get("file") or seg["data"].get("url")
+                break
+        if not record_file:
+            await event.reply("❌ 被引用的消息中不包含语音")
+            return
+
+        # 4. 下载
+        save_path = await self._save_voice(event, record_file)
+        if save_path:
+            await event.reply(f"✅ 语音已保存到本地\n📁 路径：{save_path}")
+        else:
+            await event.reply("❌ 下载语音失败，请稍后重试")
+
+    # ---------- 以下为内部方法，无需修改 ----------
+    async def _save_voice(self, event: AstrMessageEvent, file: str) -> str:
+        try:
+            if file.startswith("http"):
+                return await self._download_from_url(file)
+
+            result = await event.bot.api.call_action("get_record", file=file)
+            if isinstance(result, dict):
+                file_url = result.get("file")
+                if file_url and file_url.startswith("http"):
+                    return await self._download_from_url(file_url)
+                if file_url and os.path.isfile(file_url):
+                    return self._copy_local_file(file_url)
+                if "base64" in result:
+                    import base64
+                    data = base64.b64decode(result["base64"])
+                    save_path = self._gen_save_path(".amr")
+                    async with aiofiles.open(save_path, "wb") as f:
+                        await f.write(data)
+                    return save_path
+
+            if os.path.isfile(file):
+                return self._copy_local_file(file)
+
+            print(f"[VoiceDownloader] 无法识别的文件来源: {file}")
+            return None
+        except Exception as e:
+            print(f"[VoiceDownloader] 下载语音异常: {e}")
+            return None
+
+    async def _download_from_url(self, url: str) -> str:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        fname = os.path.basename(url.split("?")[0]) or "voice.amr"
+                        save_path = self._gen_save_path(os.path.splitext(fname)[-1])
+                        async with aiofiles.open(save_path, "wb") as f:
+                            await f.write(await resp.read())
+                        return save_path
+                    else:
+                        print(f"[VoiceDownloader] HTTP {resp.status} for {url}")
+                        return None
+        except Exception as e:
+            print(f"[VoiceDownloader] HTTP 下载失败: {e}")
+            return None
+
+    def _copy_local_file(self, src_path: str) -> str:
+        try:
+            ext = os.path.splitext(src_path)[-1]
+            save_path = self._gen_save_path(ext)
+            shutil.copy2(src_path, save_path)
+            return save_path
+        except Exception as e:
+            print(f"[VoiceDownloader] 本地文件复制失败: {e}")
+            return None
+
+    def _gen_save_path(self, ext: str) -> str:
+        timestamp = int(time.time() * 1000)
+        fname = f"voice_{timestamp}{ext}"
+        return os.path.join(self.save_dir, fname)
