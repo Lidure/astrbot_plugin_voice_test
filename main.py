@@ -126,6 +126,45 @@ class VoiceDownloader(Star):
             traceback.print_exc()
             await event.send(event.plain_result(f"❌ 发送音频失败: {str(e)}"))
 
+    @filter.command("删除音频")
+    async def delete_voice(self, event: AstrMessageEvent):
+        """命令：删除已保存的音频"""
+        
+        # 1. 提取名称参数
+        name = self._extract_name(event, "删除音频")
+        if not name:
+            await event.send(event.plain_result("❌ 请指定要删除的音频名称\n👉 用法：/删除音频 <名称>\n👉 示例：/删除音频 exe"))
+            return
+
+        save_dir = self._get_save_dir()
+        
+        # 2. 查找文件 (遍历常见语音后缀)
+        target_file = None
+        for ext in ['.amr', '.silk', '.pcm', '.mp3', '.wav']:
+            guess_path = save_dir / f"{name}{ext}"
+            if guess_path.is_file():
+                target_file = guess_path
+                break
+                
+        # 如果上面没找到，用 glob 模糊匹配一下
+        if not target_file:
+            files = list(save_dir.glob(f"{name}.*"))
+            if files:
+                target_file = files[0]
+
+        if not target_file:
+            await event.send(event.plain_result(f"❌ 未找到名为 [{name}] 的音频，无需删除\n💡 请检查名称是否正确"))
+            return
+
+        # 3. 执行删除操作
+        try:
+            target_file.unlink()  # unlink() 是 pathlib 中删除文件的方法
+            print(f"[VoiceDownloader] 🗑️ 成功删除音频: {target_file}")
+            await event.send(event.plain_result(f"✅ 语音 [{name}] 已成功删除！"))
+        except Exception as e:
+            print(f"[VoiceDownloader] ❌ 删除音频失败: {e}")
+            await event.send(event.plain_result(f"❌ 删除失败，请检查文件是否被占用或权限不足"))
+
     async def _copy_local_file_with_retry(self, src_path_str: str, name: str) -> str:
         """带重试和多重路径猜测的本地文件复制"""
         try:

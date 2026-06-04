@@ -1,14 +1,98 @@
-# astrbot-plugin-helloworld
-## AAAAAAAAAAAAA
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+---
 
-# Supports
+# 🐾 voice_test 语音小助手
+<img src="https://count.getloli.com/get/@voice_test?theme=moebooru" alt="voice_test" />
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+> 主人好呀！(๑•̀ㅂ•́)و✧  
+> 欢迎使用 `voice_test` 插件喵～  
+> 这是一个超级实用的 **本地语音素材库管理工具**！  
+> 有了我，主人就可以轻松地把喜欢的语音保存下来，随时发给群友们听啦！🎧
+
+---
+
+## ✨ 核心功能
+
+| 功能 | 说明 | 状态 |
+| :--- | :--- | :---: |
+| 📥 **一键收藏** | 引用群友的语音，给它起个可爱的名字保存下来喵！ | ✅ |
+| 📤 **随时发送** | 只需要说出名字，我就能立刻把对应的语音发出去哦！ | ✅ |
+| 🗑️ **轻松清理** | 不喜欢的语音也可以随时让我帮你丢掉喵～ | ✅ |
+
+---
+
+## 📖 使用指南
+
+### 1️⃣ 下载并命名语音 📥
+
+> 主人需要先 **引用** 一条语音消息，然后对我说：
+>
+> ```bash
+> /下载音频 <名称>
+> ```
+>
+> **举个栗子** 🌰：
+> ```bash
+> /下载音频 早上好
+> ```
+> *(我会把这条语音保存为 `早上好.amr` 喵！如果名字重复了，我会直接帮你覆盖掉旧的哦～)*
+
+---
+
+### 2️⃣ 发送已保存的语音 📤
+
+> 想要发送刚才保存的语音，只需要对我说：
+>
+> ```bash
+> /发送音频 <名称>
+> ```
+>
+> **举个栗子** 🌰：
+> ```bash
+> /发送音频 早上好
+> ```
+> *(我会立刻把语音发到群里，超快的喵！⚡)*
+
+---
+
+### 3️⃣ 删除不需要的语音 🗑️
+
+> 如果语音库太满了，或者想删掉某条语音，对我说：
+>
+> ```bash
+> /删除音频 <名称>
+> ```
+>
+> **举个栗子** 🌰：
+> ```bash
+> /删除音频 早上好
+> ```
+> *(嗖的一下就不见啦！💨)*
+
+---
+
+## 📂 语音都藏在哪里了喵？
+
+> 主人不用担心找不到文件，所有保存的语音都会乖乖待在插件目录下的 `data/records/` 文件夹里哦！
+>
+> 📍 **路径**：
+> ```text
+> AstrBot/data/plugins/voice_test/data/records/
+> ```
+
+---
+
+## ⚠️ 注意事项
+
+- 📌 主人一定要 **引用** 语音才能下载哦，不然我不知道要保存哪一条喵 (＞﹏＜)
+- 🏷️ 发送语音时，**不需要** 加上 `.amr` 或 `.silk` 这样的后缀，直接说名字就好啦！
+- 🔍 如果发送失败，可能是路径问题或者文件被占用了，主人可以看看控制台日志排查一下喵～
+
+---
+
+> 🐱 如果主人觉得好用，就给我 **摸摸头** 吧！(๑>؂<๑)  
+> 祝主人每天都有好心情喵！🌸
+
+---
+
+这样是不是看起来清爽多啦？表格、代码块、引用框、Emoji 全都安排上了！如果还想加个 **安装步骤** 或者 **更新日志** 的板块，随时告诉我喵～ 🐾
