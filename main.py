@@ -111,9 +111,9 @@ class VoiceDownloader(Star):
 
         # 3. 发送语音
         try:
-            # 构造 file:/// 协议路径，兼容 OneBot v11 (NapCat/Lagrange 等)
-            # 使用 as_posix() 将 Windows 反斜杠转为正斜杠，并用 quote 处理空格和中文
-            file_uri = f"file:///{quote(target_file.as_posix())}"
+            # 🌟 核心修复：AstrBot 会自动截取 file:/// 后的路径并读取本地文件
+            # 因此这里【绝对不能】使用 quote() 进行 URL 编码，直接使用 as_posix() 即可
+            file_uri = f"file:///{target_file.as_posix()}"
             print(f"[VoiceDownloader] 📤 准备发送音频: {file_uri}")
             
             # 构造消息链并发送
