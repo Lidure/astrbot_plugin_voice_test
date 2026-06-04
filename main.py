@@ -10,14 +10,22 @@ from astrbot.api.message_components import Record, Reply
 
 class VoiceDownloader(Star):
     """
-    语音下载插件 (纯本地文件增强版)
+    语音下载插件 (纯本地文件终极版)
     用法：引用（回复）一条语音消息，然后发送“下载音频”
     """
 
-    async def on_load(self):
-        """插件加载时创建保存目录"""
-        self.save_dir = Path(self.plugin_dir) / "data" / "records"
-        self.save_dir.mkdir(parents=True, exist_ok=True)
+    def _get_save_dir(self) -> Path:
+        """
+        懒加载获取保存目录。
+        不再依赖 on_load，确保在任何时候调用都能拿到正确的目录。
+        """
+        if not hasattr(self, '_save_dir') or self._save_dir is None:
+            # 使用 __file__ 获取当前 main.py 所在的绝对路径，最稳妥
+            plugin_dir = Path(__file__).parent.resolve()
+            self._save_dir = plugin_dir / "data" / "records"
+            self._save_dir.mkdir(parents=True, exist_ok=True)
+            print(f"[VoiceDownloader] 📁 初始化保存目录: {self._save_dir}")
+        return self._save_dir
 
     @filter.command("下载音频")
     async def download_voice(self, event: AstrMessageEvent):
@@ -57,7 +65,7 @@ class VoiceDownloader(Star):
     async def _copy_local_file_with_retry(self, src_path_str: str) -> str:
         """带重试和多重路径猜测的本地文件复制"""
         try:
-            # 规范化路径字符串 (去除可能的多余引号或转义)
+            # 规范化路径字符串
             clean_str = src_path_str.strip().strip("'\"")
             src_path = Path(clean_str)
             
@@ -85,19 +93,21 @@ class VoiceDownloader(Star):
                 await asyncio.sleep(0.5)
 
             if not target_file:
-                # 如果还是找不到，列出父目录内容帮助排错
                 parent_dir = src_path.parent
                 if parent_dir.exists():
                     files_in_dir = [f.name for f in parent_dir.iterdir() if f.is_file()]
-                    print(f"[VoiceDownloader] ❌ 文件不存在！父目录 [{parent_dir}] 下的文件有: {files_in_dir[:10]}...")
+                    print(f"[VoiceDownloader] ❌ 文件不存在！父目录下的文件有: {files_in_dir[:10]}...")
                 else:
                     print(f"[VoiceDownloader] ❌ 连父目录都不存在: {parent_dir}")
                 return None
 
+            # 🌟 核心修复：使用懒加载获取保存目录，彻底解决 save_dir 丢失问题
+            save_dir = self._get_save_dir()
+
             # 执行复制
             ext = target_file.suffix if target_file.suffix else ".amr"
             timestamp = int(time.time() * 1000)
-            dest_path = self.save_dir / f"voice_{timestamp}{ext}"
+            dest_path = save_dir / f"voice_{timestamp}{ext}"
             
             shutil.copy2(target_file, dest_path)
             print(f"[VoiceDownloader] ✅ 成功复制文件到: {dest_path}")
